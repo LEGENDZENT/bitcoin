@@ -1,4 +1,4 @@
-// Copyright (c) 2011-2018 The Bitcoin Core developers
+// Copyright (c) 2011-2021 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -13,6 +13,7 @@
 #include <QKeyEvent>
 
 class PlatformStyle;
+class TransactionDescDialog;
 class TransactionFilterProxy;
 class WalletModel;
 
@@ -23,7 +24,6 @@ class QFrame;
 class QLineEdit;
 class QMenu;
 class QModelIndex;
-class QSignalMapper;
 class QTableView;
 QT_END_NAMESPACE
 
@@ -36,6 +36,7 @@ class TransactionView : public QWidget
 
 public:
     explicit TransactionView(const PlatformStyle *platformStyle, QWidget *parent = nullptr);
+    ~TransactionView();
 
     void setModel(WalletModel *model);
 
@@ -60,10 +61,13 @@ public:
         MINIMUM_COLUMN_WIDTH = 23
     };
 
+protected:
+    void changeEvent(QEvent* e) override;
+
 private:
-    WalletModel *model;
-    TransactionFilterProxy *transactionProxyModel;
-    QTableView *transactionView;
+    WalletModel *model{nullptr};
+    TransactionFilterProxy *transactionProxyModel{nullptr};
+    QTableView *transactionView{nullptr};
 
     QComboBox *dateWidget;
     QComboBox *typeWidget;
@@ -72,21 +76,22 @@ private:
     QLineEdit *amountWidget;
 
     QMenu *contextMenu;
-    QSignalMapper *mapperThirdPartyTxUrls;
 
     QFrame *dateRangeWidget;
     QDateTimeEdit *dateFrom;
     QDateTimeEdit *dateTo;
-    QAction *abandonAction;
-    QAction *bumpFeeAction;
+    QAction *abandonAction{nullptr};
+    QAction *bumpFeeAction{nullptr};
+    QAction *copyAddressAction{nullptr};
+    QAction *copyLabelAction{nullptr};
 
     QWidget *createDateRangeWidget();
 
-    GUIUtil::TableViewLastColumnResizingFixer *columnResizingFixer;
+    bool eventFilter(QObject *obj, QEvent *event) override;
 
-    virtual void resizeEvent(QResizeEvent* event);
+    const PlatformStyle* m_platform_style;
 
-    bool eventFilter(QObject *obj, QEvent *event);
+    QList<TransactionDescDialog*> m_opened_dialogs;
 
 private Q_SLOTS:
     void contextualMenu(const QPoint &);
@@ -102,7 +107,7 @@ private Q_SLOTS:
     void openThirdPartyTxUrl(QString url);
     void updateWatchOnlyColumn(bool fHaveWatchOnly);
     void abandonTx();
-    void bumpFee();
+    void bumpFee(bool checked);
 
 Q_SIGNALS:
     void doubleClicked(const QModelIndex&);
@@ -119,6 +124,7 @@ public Q_SLOTS:
     void changedAmount();
     void changedSearch();
     void exportClicked();
+    void closeOpenedDialogs();
     void focusTransaction(const QModelIndex&);
     void focusTransaction(const uint256& txid);
 };

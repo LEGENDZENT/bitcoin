@@ -1,40 +1,38 @@
-// Copyright (c) 2016-2018 The Bitcoin Core developers
+// Copyright (c) 2016-2022 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <iostream>
 
 #include <bench/bench.h>
-#include <bloom.h>
+#include <common/bloom.h>
+#include <crypto/common.h>
+#include <span.h>
 
-static void RollingBloom(benchmark::State& state)
+#include <cstdint>
+#include <vector>
+
+static void RollingBloom(benchmark::Bench& bench)
 {
     CRollingBloomFilter filter(120000, 0.000001);
     std::vector<unsigned char> data(32);
     uint32_t count = 0;
-    while (state.KeepRunning()) {
+    bench.run([&] {
         count++;
-        data[0] = count;
-        data[1] = count >> 8;
-        data[2] = count >> 16;
-        data[3] = count >> 24;
+        WriteLE32(data.data(), count);
         filter.insert(data);
 
-        data[0] = count >> 24;
-        data[1] = count >> 16;
-        data[2] = count >> 8;
-        data[3] = count;
+        WriteBE32(data.data(), count);
         filter.contains(data);
-    }
+    });
 }
 
-static void RollingBloomReset(benchmark::State& state)
+static void RollingBloomReset(benchmark::Bench& bench)
 {
     CRollingBloomFilter filter(120000, 0.000001);
-    while (state.KeepRunning()) {
+    bench.run([&] {
         filter.reset();
-    }
+    });
 }
 
-BENCHMARK(RollingBloom, 1500 * 1000);
-BENCHMARK(RollingBloomReset, 20000);
+BENCHMARK(RollingBloom, benchmark::PriorityLevel::HIGH);
+BENCHMARK(RollingBloomReset, benchmark::PriorityLevel::HIGH);

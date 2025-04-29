@@ -2,7 +2,7 @@
 #
 # linearize-data.py: Construct a linear, no-fork version of the chain.
 #
-# Copyright (c) 2013-2018 The Bitcoin Core developers
+# Copyright (c) 2013-2022 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #
@@ -15,54 +15,14 @@ import sys
 import hashlib
 import datetime
 import time
+import glob
 from collections import namedtuple
-from binascii import unhexlify
 
 settings = {}
 
-def hex_switchEndian(s):
-    """ Switches the endianness of a hex string (in pairs of hex chars) """
-    pairList = [s[i:i+2].encode() for i in range(0, len(s), 2)]
-    return b''.join(pairList[::-1]).decode()
-
-def uint32(x):
-    return x & 0xffffffff
-
-def bytereverse(x):
-    return uint32(( ((x) << 24) | (((x) << 8) & 0x00ff0000) |
-               (((x) >> 8) & 0x0000ff00) | ((x) >> 24) ))
-
-def bufreverse(in_buf):
-    out_words = []
-    for i in range(0, len(in_buf), 4):
-        word = struct.unpack('@I', in_buf[i:i+4])[0]
-        out_words.append(struct.pack('@I', bytereverse(word)))
-    return b''.join(out_words)
-
-def wordreverse(in_buf):
-    out_words = []
-    for i in range(0, len(in_buf), 4):
-        out_words.append(in_buf[i:i+4])
-    out_words.reverse()
-    return b''.join(out_words)
-
-def calc_hdr_hash(blk_hdr):
-    hash1 = hashlib.sha256()
-    hash1.update(blk_hdr)
-    hash1_o = hash1.digest()
-
-    hash2 = hashlib.sha256()
-    hash2.update(hash1_o)
-    hash2_o = hash2.digest()
-
-    return hash2_o
-
 def calc_hash_str(blk_hdr):
-    hash = calc_hdr_hash(blk_hdr)
-    hash = bufreverse(hash)
-    hash = wordreverse(hash)
-    hash_str = hash.hex()
-    return hash_str
+    blk_hdr_hash = hashlib.sha256(hashlib.sha256(blk_hdr).digest()).digest()
+    return blk_hdr_hash[::-1].hex()
 
 def get_blk_dt(blk_hdr):
     members = struct.unpack("<I", blk_hdr[68:68+4])
@@ -74,12 +34,12 @@ def get_blk_dt(blk_hdr):
 # When getting the list of block hashes, undo any byte reversals.
 def get_block_hashes(settings):
     blkindex = []
-    f = open(settings['hashlist'], "r", encoding="utf8")
-    for line in f:
-        line = line.rstrip()
-        if settings['rev_hash_bytes'] == 'true':
-            line = hex_switchEndian(line)
-        blkindex.append(line)
+    with open(settings['hashlist'], "r", encoding="utf8") as f:
+        for line in f:
+            line = line.rstrip()
+            if settings['rev_hash_bytes'] == 'true':
+                line = bytes.fromhex(line)[::-1].hex()
+            blkindex.append(line)
 
     print("Read " + str(len(blkindex)) + " hashes")
 
@@ -92,6 +52,40 @@ def mkblockmap(blkindex):
         blkmap[hash] = height
     return blkmap
 
+# This gets the first block file ID that exists from the input block
+# file directory.
+def getFirstBlockFileId(block_dir_path):
+    # First, this sets up a pattern to search for block files, for
+    # example 'blkNNNNN.dat'.
+    blkFilePattern = os.path.join(block_dir_path, "blk[0-9][0-9][0-9][0-9][0-9].dat")
+
+    # This search is done with glob
+    blkFnList = glob.glob(blkFilePattern)
+
+    if len(blkFnList) == 0:
+        print("blocks not pruned - starting at 0")
+        return 0
+    # We then get the lexicographic minimum, which should be the first
+    # block file name.
+    firstBlkFilePath = min(blkFnList)
+    firstBlkFn = os.path.basename(firstBlkFilePath)
+
+    # now, the string should be ['b','l','k','N','N','N','N','N','.','d','a','t']
+    # So get the ID by choosing:              3   4   5   6   7
+    # The ID is not necessarily 0 if this is a pruned node.
+    blkId = int(firstBlkFn[3:8])
+    return blkId
+
+def read_xor_key(blocks_path):
+    NUM_XOR_BYTES = 8  # From InitBlocksdirXorKey::xor_key.size()
+    try:
+        xor_filename = os.path.join(blocks_path, "xor.dat")
+        with open(xor_filename, "rb") as xor_file:
+            return xor_file.read(NUM_XOR_BYTES)
+    # support also blockdirs created with pre-v28 versions, where no xor key exists yet
+    except FileNotFoundError:
+        return bytes([0] * NUM_XOR_BYTES)
+
 # Block header and extent on disk
 BlockExtent = namedtuple('BlockExtent', ['fn', 'offset', 'inhdr', 'blkhdr', 'size'])
 
@@ -101,7 +95,9 @@ class BlockDataCopier:
         self.blkindex = blkindex
         self.blkmap = blkmap
 
-        self.inFn = 0
+        # Get first occurring block file id - for pruned nodes this
+        # will not necessarily be 0
+        self.inFn = getFirstBlockFileId(self.settings['input'])
         self.inF = None
         self.outFn = 0
         self.outsz = 0
@@ -109,6 +105,7 @@ class BlockDataCopier:
         self.outFname = None
         self.blkCountIn = 0
         self.blkCountOut = 0
+        self.xor_key = read_xor_key(self.settings['input'])
 
         self.lastDate = datetime.datetime(2000, 1, 1)
         self.highTS = 1408893517 - 315360000
@@ -126,6 +123,13 @@ class BlockDataCopier:
         self.blockExtents = {}
         self.outOfOrderData = {}
         self.outOfOrderSize = 0 # running total size for items in outOfOrderData
+
+    def read_xored(self, f, size):
+        offset = f.tell()
+        data = bytearray(f.read(size))
+        for i in range(len(data)):
+            data[i] ^= self.xor_key[(i + offset) % len(self.xor_key)]
+        return bytes(data)
 
     def writeBlock(self, inhdr, blk_hdr, rawblock):
         blockSizeOnDisk = len(inhdr) + len(blk_hdr) + len(rawblock)
@@ -179,7 +183,7 @@ class BlockDataCopier:
         '''Fetch block contents from disk given extents'''
         with open(self.inFileName(extent.fn), "rb") as f:
             f.seek(extent.offset)
-            return f.read(extent.size)
+            return self.read_xored(f, extent.size)
 
     def copyOneBlock(self):
         '''Find the next block to be written in the input, and copy it to the output.'''
@@ -204,7 +208,7 @@ class BlockDataCopier:
                     print("Premature end of block data")
                     return
 
-            inhdr = self.inF.read(8)
+            inhdr = self.read_xored(self.inF, 8)
             if (not inhdr or (inhdr[0] == "\0")):
                 self.inF.close()
                 self.inF = None
@@ -213,12 +217,15 @@ class BlockDataCopier:
 
             inMagic = inhdr[:4]
             if (inMagic != self.settings['netmagic']):
-                print("Invalid magic: " + inMagic.hex())
-                return
+                # Seek backwards 7 bytes (skipping the first byte in the previous search)
+                # and continue searching from the new position if the magic bytes are not
+                # found.
+                self.inF.seek(-7, os.SEEK_CUR)
+                continue
             inLenLE = inhdr[4:]
             su = struct.unpack("<I", inLenLE)
             inLen = su[0] - 80 # length without header
-            blk_hdr = self.inF.read(80)
+            blk_hdr = self.read_xored(self.inF, 80)
             inExtent = BlockExtent(self.inFn, self.inF.tell(), inhdr, blk_hdr, inLen)
 
             self.hash_str = calc_hash_str(blk_hdr)
@@ -235,7 +242,7 @@ class BlockDataCopier:
 
             if self.blkCountOut == blkHeight:
                 # If in-order block, just copy
-                rawblock = self.inF.read(inLen)
+                rawblock = self.read_xored(self.inF, inLen)
                 self.writeBlock(inhdr, blk_hdr, rawblock)
 
                 # See if we can catch up to prior out-of-order blocks
@@ -248,7 +255,7 @@ class BlockDataCopier:
                     # If there is space in the cache, read the data
                     # Reading the data in file sequence instead of seeking and fetching it later is preferred,
                     # but we don't want to fill up memory
-                    self.outOfOrderData[blkHeight] = self.inF.read(inLen)
+                    self.outOfOrderData[blkHeight] = self.read_xored(self.inF, inLen)
                     self.outOfOrderSize += inLen
                 else: # If no space in cache, seek forward
                     self.inF.seek(inLen, os.SEEK_CUR)
@@ -260,19 +267,18 @@ if __name__ == '__main__':
         print("Usage: linearize-data.py CONFIG-FILE")
         sys.exit(1)
 
-    f = open(sys.argv[1], encoding="utf8")
-    for line in f:
-        # skip comment lines
-        m = re.search('^\s*#', line)
-        if m:
-            continue
+    with open(sys.argv[1], encoding="utf8") as f:
+        for line in f:
+            # skip comment lines
+            m = re.search(r'^\s*#', line)
+            if m:
+                continue
 
-        # parse key=value lines
-        m = re.search('^(\w+)\s*=\s*(\S.*)$', line)
-        if m is None:
-            continue
-        settings[m.group(1)] = m.group(2)
-    f.close()
+            # parse key=value lines
+            m = re.search(r'^(\w+)\s*=\s*(\S.*)$', line)
+            if m is None:
+                continue
+            settings[m.group(1)] = m.group(2)
 
     # Force hash byte format setting to be lowercase to make comparisons easier.
     # Also place upfront in case any settings need to know about it.
@@ -302,7 +308,7 @@ if __name__ == '__main__':
     settings['max_out_sz'] = int(settings['max_out_sz'])
     settings['split_timestamp'] = int(settings['split_timestamp'])
     settings['file_timestamp'] = int(settings['file_timestamp'])
-    settings['netmagic'] = unhexlify(settings['netmagic'].encode('utf-8'))
+    settings['netmagic'] = bytes.fromhex(settings['netmagic'])
     settings['out_of_order_cache_sz'] = int(settings['out_of_order_cache_sz'])
     settings['debug_output'] = settings['debug_output'].lower()
 

@@ -1,34 +1,42 @@
-// Copyright (c) 2012-2019 The Bitcoin Core developers
+// Copyright (c) 2012-2022 The Bitcoin Core developers
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <consensus/tx_verify.h>
-#include <core_io.h>
 #include <key.h>
-#include <keystore.h>
-#include <validation.h>
 #include <policy/policy.h>
+#include <policy/settings.h>
 #include <script/script.h>
 #include <script/script_error.h>
-#include <policy/settings.h>
 #include <script/sign.h>
-#include <script/ismine.h>
-#include <test/setup_common.h>
+#include <script/signingprovider.h>
+#include <test/util/setup_common.h>
+#include <test/util/transaction_utils.h>
+#include <validation.h>
 
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
 
 // Helpers:
-static std::vector<unsigned char>
-Serialize(const CScript& s)
+static bool IsStandardTx(const CTransaction& tx, bool permit_bare_multisig, std::string& reason)
+{
+    return IsStandardTx(tx, std::nullopt, permit_bare_multisig, CFeeRate{DUST_RELAY_TX_FEE}, reason);
+}
+
+static bool IsStandardTx(const CTransaction& tx, std::string& reason)
+{
+    return IsStandardTx(tx, std::nullopt, /*permit_bare_multisig=*/true, CFeeRate{DUST_RELAY_TX_FEE}, reason) &&
+           IsStandardTx(tx, std::nullopt, /*permit_bare_multisig=*/false, CFeeRate{DUST_RELAY_TX_FEE}, reason);
+}
+
+static std::vector<unsigned char> Serialize(const CScript& s)
 {
     std::vector<unsigned char> sSerialized(s.begin(), s.end());
     return sSerialized;
 }
 
-static bool
-Verify(const CScript& scriptSig, const CScript& scriptPubKey, bool fStrict, ScriptError& err)
+static bool Verify(const CScript& scriptSig, const CScript& scriptPubKey, bool fStrict, ScriptError& err)
 {
     // Create dummy to/from transactions:
     CMutableTransaction txFrom;
@@ -43,7 +51,7 @@ Verify(const CScript& scriptSig, const CScript& scriptPubKey, bool fStrict, Scri
     txTo.vin[0].scriptSig = scriptSig;
     txTo.vout[0].nValue = 1;
 
-    return VerifyScript(scriptSig, scriptPubKey, nullptr, fStrict ? SCRIPT_VERIFY_P2SH : SCRIPT_VERIFY_NONE, MutableTransactionSignatureChecker(&txTo, 0, txFrom.vout[0].nValue), &err);
+    return VerifyScript(scriptSig, scriptPubKey, nullptr, fStrict ? SCRIPT_VERIFY_P2SH : SCRIPT_VERIFY_NONE, MutableTransactionSignatureChecker(&txTo, 0, txFrom.vout[0].nValue, MissingDataBehavior::ASSERT_FAIL), &err);
 }
 
 
@@ -51,13 +59,12 @@ BOOST_FIXTURE_TEST_SUITE(script_p2sh_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(sign)
 {
-    LOCK(cs_main);
     // Pay-to-script-hash looks like this:
     // scriptSig:    <sig> <sig...> <serialized_script>
     // scriptPubKey: HASH160 <hash> EQUAL
 
     // Test SignSignature() (and therefore the version of Solver() that signs transactions)
-    CBasicKeyStore keystore;
+    FillableSigningProvider keystore;
     CKey key[4];
     for (int i = 0; i < 4; i++)
     {
@@ -99,21 +106,22 @@ BOOST_AUTO_TEST_CASE(sign)
         txTo[i].vin[0].prevout.n = i;
         txTo[i].vin[0].prevout.hash = txFrom.GetHash();
         txTo[i].vout[0].nValue = 1;
-        BOOST_CHECK_MESSAGE(IsMine(keystore, txFrom.vout[i].scriptPubKey), strprintf("IsMine %d", i));
     }
     for (int i = 0; i < 8; i++)
     {
-        BOOST_CHECK_MESSAGE(SignSignature(keystore, CTransaction(txFrom), txTo[i], 0, SIGHASH_ALL), strprintf("SignSignature %d", i));
+        SignatureData empty;
+        BOOST_CHECK_MESSAGE(SignSignature(keystore, CTransaction(txFrom), txTo[i], 0, SIGHASH_ALL, empty), strprintf("SignSignature %d", i));
     }
     // All of the above should be OK, and the txTos have valid signatures
     // Check to make sure signature verification fails if we use the wrong ScriptSig:
+    SignatureCache signature_cache{DEFAULT_SIGNATURE_CACHE_BYTES};
     for (int i = 0; i < 8; i++) {
         PrecomputedTransactionData txdata(txTo[i]);
         for (int j = 0; j < 8; j++)
         {
             CScript sigSave = txTo[i].vin[0].scriptSig;
             txTo[i].vin[0].scriptSig = txTo[j].vin[0].scriptSig;
-            bool sigOK = CScriptCheck(txFrom.vout[txTo[i].vin[0].prevout.n], CTransaction(txTo[i]), 0, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC, false, &txdata)();
+            bool sigOK = !CScriptCheck(txFrom.vout[txTo[i].vin[0].prevout.n], CTransaction(txTo[i]), signature_cache, 0, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC, false, &txdata)().has_value();
             if (i == j)
                 BOOST_CHECK_MESSAGE(sigOK, strprintf("VerifySignature %d %d", i, j));
             else
@@ -152,11 +160,11 @@ BOOST_AUTO_TEST_CASE(norecurse)
 
 BOOST_AUTO_TEST_CASE(set)
 {
-    LOCK(cs_main);
     // Test the CScript::Set* methods
-    CBasicKeyStore keystore;
+    FillableSigningProvider keystore;
     CKey key[4];
     std::vector<CPubKey> keys;
+    keys.reserve(4);
     for (int i = 0; i < 4; i++)
     {
         key[i].MakeNewKey(true);
@@ -196,12 +204,14 @@ BOOST_AUTO_TEST_CASE(set)
         txTo[i].vin[0].prevout.hash = txFrom.GetHash();
         txTo[i].vout[0].nValue = 1*CENT;
         txTo[i].vout[0].scriptPubKey = inner[i];
-        BOOST_CHECK_MESSAGE(IsMine(keystore, txFrom.vout[i].scriptPubKey), strprintf("IsMine %d", i));
     }
     for (int i = 0; i < 4; i++)
     {
-        BOOST_CHECK_MESSAGE(SignSignature(keystore, CTransaction(txFrom), txTo[i], 0, SIGHASH_ALL), strprintf("SignSignature %d", i));
-        BOOST_CHECK_MESSAGE(IsStandardTx(CTransaction(txTo[i]), reason), strprintf("txTo[%d].IsStandard", i));
+        SignatureData empty;
+        BOOST_CHECK_MESSAGE(SignSignature(keystore, CTransaction(txFrom), txTo[i], 0, SIGHASH_ALL, empty), strprintf("SignSignature %d", i));
+        BOOST_CHECK_MESSAGE(IsStandardTx(CTransaction(txTo[i]), /*permit_bare_multisig=*/true, reason), strprintf("txTo[%d].IsStandard", i));
+        bool no_pbms_is_std = IsStandardTx(CTransaction(txTo[i]), /*permit_bare_multisig=*/false, reason);
+        BOOST_CHECK_MESSAGE((i == 0 ? no_pbms_is_std : !no_pbms_is_std), strprintf("txTo[%d].IsStandard(permbaremulti=false)", i));
     }
 }
 
@@ -213,20 +223,21 @@ BOOST_AUTO_TEST_CASE(is)
     p2sh << OP_HASH160 << ToByteVector(dummy) << OP_EQUAL;
     BOOST_CHECK(p2sh.IsPayToScriptHash());
 
-    // Not considered pay-to-script-hash if using one of the OP_PUSHDATA opcodes:
     std::vector<unsigned char> direct = {OP_HASH160, 20};
     direct.insert(direct.end(), 20, 0);
     direct.push_back(OP_EQUAL);
     BOOST_CHECK(CScript(direct.begin(), direct.end()).IsPayToScriptHash());
+
+    // Not considered pay-to-script-hash if using one of the OP_PUSHDATA opcodes:
     std::vector<unsigned char> pushdata1 = {OP_HASH160, OP_PUSHDATA1, 20};
     pushdata1.insert(pushdata1.end(), 20, 0);
     pushdata1.push_back(OP_EQUAL);
     BOOST_CHECK(!CScript(pushdata1.begin(), pushdata1.end()).IsPayToScriptHash());
-    std::vector<unsigned char> pushdata2 = {OP_HASH160, 20, 0};
+    std::vector<unsigned char> pushdata2 = {OP_HASH160, OP_PUSHDATA2, 20, 0};
     pushdata2.insert(pushdata2.end(), 20, 0);
     pushdata2.push_back(OP_EQUAL);
     BOOST_CHECK(!CScript(pushdata2.begin(), pushdata2.end()).IsPayToScriptHash());
-    std::vector<unsigned char> pushdata4 = {OP_HASH160, 20, 0, 0, 0};
+    std::vector<unsigned char> pushdata4 = {OP_HASH160, OP_PUSHDATA4, 20, 0, 0, 0};
     pushdata4.insert(pushdata4.end(), 20, 0);
     pushdata4.push_back(OP_EQUAL);
     BOOST_CHECK(!CScript(pushdata4.begin(), pushdata4.end()).IsPayToScriptHash());
@@ -266,17 +277,17 @@ BOOST_AUTO_TEST_CASE(switchover)
 
 BOOST_AUTO_TEST_CASE(AreInputsStandard)
 {
-    LOCK(cs_main);
     CCoinsView coinsDummy;
     CCoinsViewCache coins(&coinsDummy);
-    CBasicKeyStore keystore;
+    FillableSigningProvider keystore;
     CKey key[6];
-    std::vector<CPubKey> keys;
     for (int i = 0; i < 6; i++)
     {
         key[i].MakeNewKey(true);
         BOOST_CHECK(keystore.AddKey(key[i]));
     }
+    std::vector<CPubKey> keys;
+    keys.reserve(3);
     for (int i = 0; i < 3; i++)
         keys.push_back(key[i].GetPubKey());
 
@@ -337,9 +348,12 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard)
         txTo.vin[i].prevout.n = i;
         txTo.vin[i].prevout.hash = txFrom.GetHash();
     }
-    BOOST_CHECK(SignSignature(keystore, CTransaction(txFrom), txTo, 0, SIGHASH_ALL));
-    BOOST_CHECK(SignSignature(keystore, CTransaction(txFrom), txTo, 1, SIGHASH_ALL));
-    BOOST_CHECK(SignSignature(keystore, CTransaction(txFrom), txTo, 2, SIGHASH_ALL));
+    SignatureData empty;
+    BOOST_CHECK(SignSignature(keystore, CTransaction(txFrom), txTo, 0, SIGHASH_ALL, empty));
+    SignatureData empty_b;
+    BOOST_CHECK(SignSignature(keystore, CTransaction(txFrom), txTo, 1, SIGHASH_ALL, empty_b));
+    SignatureData empty_c;
+    BOOST_CHECK(SignSignature(keystore, CTransaction(txFrom), txTo, 2, SIGHASH_ALL, empty_c));
     // SignSignature doesn't know how to sign these. We're
     // not testing validating signatures, so just create
     // dummy signatures that DO include the correct P2SH scripts:

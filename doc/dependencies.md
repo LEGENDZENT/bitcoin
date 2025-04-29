@@ -1,46 +1,38 @@
-Dependencies
-============
+# Dependencies
 
-These are the dependencies currently used by Bitcoin Core. You can find instructions for installing them in the `build-*.md` file for your platform.
+These are the dependencies used by Bitcoin Core.
+You can find installation instructions in the `build-*.md` file for your platform.
+"Runtime" and "Version Used" are both in reference to the release binaries.
 
-| Dependency | Version used | Minimum required | CVEs | Shared | [Bundled Qt library](https://doc.qt.io/qt-5/configure-options.html#third-party-libraries) |
-| --- | --- | --- | --- | --- | --- |
-| Berkeley DB | [4.8.30](https://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html) | 4.8.x | No |  |  |
-| Boost | [1.64.0](https://www.boost.org/users/download/) | [1.47.0](https://github.com/bitcoin/bitcoin/pull/8920) | No |  |  |
-| Clang |  | [3.3+](https://llvm.org/releases/download.html) (C++11 support) |  |  |  |
-| D-Bus | [1.10.18](https://cgit.freedesktop.org/dbus/dbus/tree/NEWS?h=dbus-1.10) |  | No | Yes |  |
-| Expat | [2.2.6](https://libexpat.github.io/) |  | No | Yes |  |
-| fontconfig | [2.12.1](https://www.freedesktop.org/software/fontconfig/release/) |  | No | Yes |  |
-| FreeType | [2.7.1](https://download.savannah.gnu.org/releases/freetype) |  | No |  |  |
-| GCC |  | [4.8+](https://gcc.gnu.org/) (C++11 support) |  |  |  |
-| HarfBuzz-NG |  |  |  |  |  |
-| libevent | [2.1.8-stable](https://github.com/libevent/libevent/releases) | 2.0.22 | No |  |  |
-| libjpeg |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk#L65) |
-| libpng |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk#L64) |
-| librsvg | |  |  |  |  |
-| MiniUPnPc | [2.0.20180203](http://miniupnp.free.fr/files) |  | No |  |  |
-| OpenSSL | [1.0.1k](https://www.openssl.org/source) |  | Yes |  |  |
-| PCRE |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk#L66) |
-| protobuf | [2.6.1](https://github.com/google/protobuf/releases) |  | No |  |  |
-| Python (tests) |  | [3.5](https://www.python.org/downloads) |  |  |  |
-| qrencode | [3.4.4](https://fukuchi.org/works/qrencode) |  | No |  |  |
-| Qt | [5.9.7](https://download.qt.io/official_releases/qt/) | [5.5.1](https://github.com/bitcoin/bitcoin/issues/13478) | No |  |  |
-| XCB |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk#L87) (Linux only) |
-| xkbcommon |  |  |  |  | [Yes](https://github.com/bitcoin/bitcoin/blob/master/depends/packages/qt.mk#L86) (Linux only) |
-| ZeroMQ | [4.3.1](https://github.com/zeromq/libzmq/releases) | 4.0.0 | No |  |  |
-| zlib | [1.2.11](https://zlib.net/) |  |  |  | No |
+## Compiler
 
-Controlling dependencies
-------------------------
-Some dependencies are not needed in all configurations. The following are some factors that affect the dependency list.
+Bitcoin Core requires one of the following compilers.
 
-#### Options passed to `./configure`
-* MiniUPnPc is not needed with  `--with-miniupnpc=no`.
-* Berkeley DB is not needed with `--disable-wallet`.
-* protobuf is not needed with `--disable-bip70`.
-* Qt is not needed with `--without-gui`.
-* If the qrencode dependency is absent, QR support won't be added. To force an error when that happens, pass `--with-qrencode`.
-* ZeroMQ is needed only with the `--with-zmq` option.
+| Dependency | Minimum required |
+| --- | --- |
+| [Clang](https://clang.llvm.org) | [16.0](https://github.com/bitcoin/bitcoin/pull/30263) |
+| [GCC](https://gcc.gnu.org) | [11.1](https://github.com/bitcoin/bitcoin/pull/29091) |
 
-#### Other
-* librsvg is only needed if you need to run `make deploy` on (cross-compilation to) macOS.
+## Required
+
+| Dependency | Releases | Version used | Minimum required | Runtime |
+| --- | --- | --- | --- | --- |
+| CMake | [link](https://cmake.org/) | N/A | [3.22](https://github.com/bitcoin/bitcoin/pull/30454) | No |
+| [Boost](../depends/packages/boost.mk) | [link](https://www.boost.org/users/download/) | [1.81.0](https://github.com/bitcoin/bitcoin/pull/26557) | [1.73.0](https://github.com/bitcoin/bitcoin/pull/29066) | No |
+| [libevent](../depends/packages/libevent.mk) | [link](https://github.com/libevent/libevent/releases) | [2.1.12-stable](https://github.com/bitcoin/bitcoin/pull/21991) | [2.1.8](https://github.com/bitcoin/bitcoin/pull/24681) | No |
+| glibc | [link](https://www.gnu.org/software/libc/) | N/A | [2.31](https://github.com/bitcoin/bitcoin/pull/29987) | Yes |
+| Linux Kernel (if building that platform) | [link](https://www.kernel.org/) | N/A | [3.17.0](https://github.com/bitcoin/bitcoin/pull/27699) | Yes |
+
+## Optional
+
+| Dependency | Releases | Version used | Minimum required | Runtime |
+| --- | --- | --- | --- | --- |
+| [Fontconfig](../depends/packages/fontconfig.mk) (gui) | [link](https://www.freedesktop.org/wiki/Software/fontconfig/) | [2.12.6](https://github.com/bitcoin/bitcoin/pull/23495) | 2.6 | Yes |
+| [FreeType](../depends/packages/freetype.mk) (gui) | [link](https://freetype.org) | [2.11.0](https://github.com/bitcoin/bitcoin/commit/01544dd78ccc0b0474571da854e27adef97137fb) | 2.3.0 | Yes |
+| [qrencode](../depends/packages/qrencode.mk) (gui) | [link](https://fukuchi.org/works/qrencode/) | [4.1.1](https://github.com/bitcoin/bitcoin/pull/27312) | N/A | No |
+| [Qt](../depends/packages/qt.mk) (gui) | [link](https://download.qt.io/archive/qt/) | [6.7.3](https://github.com/bitcoin/bitcoin/pull/30997) | [6.2](https://github.com/bitcoin/bitcoin/pull/30997) | No |
+| [ZeroMQ](../depends/packages/zeromq.mk) (notifications) | [link](https://github.com/zeromq/libzmq/releases) | [4.3.4](https://github.com/bitcoin/bitcoin/pull/23956) | 4.0.0 | No |
+| [Berkeley DB](../depends/packages/bdb.mk) (legacy wallet) | [link](https://www.oracle.com/technetwork/database/database-technologies/berkeleydb/downloads/index.html) | 4.8.30 | 4.8.x | No |
+| [SQLite](../depends/packages/sqlite.mk) (wallet) | [link](https://sqlite.org) | [3.38.5](https://github.com/bitcoin/bitcoin/pull/25378) | [3.7.17](https://github.com/bitcoin/bitcoin/pull/19077) | No |
+| Python (scripts, tests) | [link](https://www.python.org) | N/A | [3.10](https://github.com/bitcoin/bitcoin/pull/30527) | No |
+| [systemtap](../depends/packages/systemtap.mk) ([tracing](tracing.md)) | [link](https://sourceware.org/systemtap/) | [4.8](https://github.com/bitcoin/bitcoin/pull/26945)| N/A | No |
